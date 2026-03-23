@@ -27,6 +27,29 @@ import "./App.css";
 const LEGACY_GROUP_ID_KEY = "mv_group_id";
 const LEGACY_PASSWORD_KEY = "mv_group_pw";
 
+function getUserGroupStorageKey(uid) {
+  return `mv_active_group_${String(uid || "").trim()}`;
+}
+
+function getStoredActiveGroupForUser(uid) {
+  const key = getUserGroupStorageKey(uid);
+  if (!key.trim()) return "";
+  return String(localStorage.getItem(key) || "").trim();
+}
+
+function setStoredActiveGroupForUser(uid, groupId) {
+  const key = getUserGroupStorageKey(uid);
+  if (!key.trim()) return;
+
+  const value = String(groupId || "").trim();
+  if (value) {
+    localStorage.setItem(key, value);
+    return;
+  }
+
+  localStorage.removeItem(key);
+}
+
 function normalizeGroupId(groupId) {
   return String(groupId || "").trim().toLowerCase();
 }
@@ -277,7 +300,14 @@ function App() {
     const unsub = onAuthStateChanged(auth, (currentUser) => {
       setUser(currentUser || null);
       setAuthReady(true);
-      if (!currentUser) {
+
+      if (currentUser?.uid) {
+        const restoredGroupId = getStoredActiveGroupForUser(currentUser.uid);
+        if (restoredGroupId) {
+          setActiveGroup(restoredGroupId);
+          setGroupId((prev) => prev || restoredGroupId);
+        }
+      } else {
         setActiveGroup("");
       }
     });
@@ -302,6 +332,11 @@ function App() {
 
     refreshDashboardData();
   }, [activeGroup, user]);
+
+  useEffect(() => {
+    if (!user?.uid) return;
+    setStoredActiveGroupForUser(user.uid, activeGroup);
+  }, [user?.uid, activeGroup]);
 
   const resolveAdminAccess = async (currentUser) => {
     if (!db || !currentUser?.uid) return false;
@@ -1449,6 +1484,7 @@ function App() {
       }
 
       setActiveGroup(resolvedGroup);
+      setGroupId(resolvedGroup);
       setGroupPassword("");
       setGroupMessage({ type: "success", text: `Group unlocked: ${resolvedGroup}` });
     } catch (err) {
