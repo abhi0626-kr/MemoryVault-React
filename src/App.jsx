@@ -247,6 +247,14 @@ function App() {
   const [isAdminUser, setIsAdminUser] = useState(false);
   const [previewIndex, setPreviewIndex] = useState(-1);
   const [previewItems, setPreviewItems] = useState([]);
+  const [isDeleteConfirmOpen, setIsDeleteConfirmOpen] = useState(false);
+  const [pendingDeleteMediaId, setPendingDeleteMediaId] = useState("");
+  const [recycleBinItems, setRecycleBinItems] = useState([]);
+  const [recycleLoading, setRecycleLoading] = useState(false);
+  const [recycleActionId, setRecycleActionId] = useState("");
+  const [isRecycleDeleteConfirmOpen, setIsRecycleDeleteConfirmOpen] = useState(false);
+  const [pendingRecycleDeleteItem, setPendingRecycleDeleteItem] = useState(null);
+  const [isRecycleEmptyConfirmOpen, setIsRecycleEmptyConfirmOpen] = useState(false);
   const [groupIconUrl, setGroupIconUrl] = useState("");
   const [isGroupInfoOpen, setIsGroupInfoOpen] = useState(false);
   const [groupIconUploading, setGroupIconUploading] = useState(false);
@@ -268,12 +276,13 @@ function App() {
   const [faceGroups, setFaceGroups] = useState([]);
   const [faceModelReady, setFaceModelReady] = useState(false);
   const [faceProcessing, setFaceProcessing] = useState(false);
-  const [currentDashboardTab, setCurrentDashboardTab] = useState("gallery"); // "gallery" or "people"
+  const [currentDashboardTab, setCurrentDashboardTab] = useState("gallery"); // "gallery" or "people" or "recycle"
   const [selectedFaceGroupId, setSelectedFaceGroupId] = useState("");
   const [faceAccuracyPreset, setFaceAccuracyPresetState] = useState(getFaceAccuracyPreset());
 
   const canShowGroupStep = !!user;
   const canEnterDashboard = !!user && !!activeGroup;
+  const canViewRecycleBin = !!isAdminUser && canEnterDashboard;
   const currentPage = canEnterDashboard ? "dashboard" : canShowGroupStep ? "group" : "signin";
 
   useEffect(() => {
@@ -318,6 +327,7 @@ function App() {
   useEffect(() => {
     if (!activeGroup || !user) {
       setMediaItems([]);
+      setRecycleBinItems([]);
       setUploadQueue([]);
       setCloudinaryConfig(null);
       setGroupIconUrl("");
@@ -332,6 +342,12 @@ function App() {
 
     refreshDashboardData();
   }, [activeGroup, user]);
+
+  useEffect(() => {
+    if (!isAdminUser && currentDashboardTab === "recycle") {
+      setCurrentDashboardTab("gallery");
+    }
+  }, [isAdminUser, currentDashboardTab]);
 
   useEffect(() => {
     if (!user?.uid) return;
@@ -550,6 +566,47 @@ function App() {
     });
   };
 
+  const fetchRecycleBinMedia = async (groupIdValue) => {
+    if (!db || !groupIdValue) return [];
+
+    const normalizedCandidates = Array.from(
+      new Set(getGroupDocIdCandidates(groupIdValue).map((item) => normalizeGroupId(item)).filter(Boolean))
+    ).slice(0, 10);
+
+    const displayCandidates = Array.from(
+      new Set([String(groupIdValue || "").trim(), getLegacyGroupId(), "Mr. Developers", "mr. developers", "mr.developers"])
+    ).filter(Boolean).slice(0, 10);
+
+    const byId = new Map();
+    const addSnapshots = (snap) => {
+      snap.docs.forEach((row) => {
+        if (!byId.has(row.id)) {
+          byId.set(row.id, { recycleDocId: row.id, ...row.data() });
+        }
+      });
+    };
+
+    if (normalizedCandidates.length === 1) {
+      addSnapshots(
+        await getDocs(query(collection(db, "mediaRecycleBin"), where("groupIdNormalized", "==", normalizedCandidates[0])))
+      );
+    } else if (normalizedCandidates.length > 1) {
+      addSnapshots(
+        await getDocs(query(collection(db, "mediaRecycleBin"), where("groupIdNormalized", "in", normalizedCandidates)))
+      );
+    }
+
+    if (displayCandidates.length === 1) {
+      addSnapshots(await getDocs(query(collection(db, "mediaRecycleBin"), where("groupId", "==", displayCandidates[0]))));
+    } else if (displayCandidates.length > 1) {
+      addSnapshots(await getDocs(query(collection(db, "mediaRecycleBin"), where("groupId", "in", displayCandidates))));
+    }
+
+    return Array.from(byId.values()).sort((a, b) => {
+      return getTimestampMs(b.deletedAt) - getTimestampMs(a.deletedAt);
+    });
+  };
+
   const refreshDashboardData = async () => {
     if (!activeGroup || !db) return;
     setDashboardLoading(true);
@@ -586,6 +643,28 @@ function App() {
       setDashboardLoading(false);
     }
   };
+
+  const refreshRecycleBinData = async () => {
+    if (!activeGroup || !db || !isAdminUser) {
+      setRecycleBinItems([]);
+      return;
+    }
+
+    setRecycleLoading(true);
+    try {
+      const recycleItems = await fetchRecycleBinMedia(activeGroup);
+      setRecycleBinItems(recycleItems);
+    } catch (err) {
+      setDashboardMessage({ type: "error", text: err?.message || "Failed to load recycle bin." });
+    } finally {
+      setRecycleLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (currentDashboardTab !== "recycle") return;
+    refreshRecycleBinData();
+  }, [currentDashboardTab, activeGroup, isAdminUser]);
 
   const addFilesToQueue = (files) => {
     const acceptedFiles = Array.from(files || []).filter(
@@ -827,9 +906,29 @@ function App() {
   const selectedFaceGroupMedia = selectedFaceGroup ? getFaceGroupMedia(selectedFaceGroup) : [];
 
   const handleDeleteMedia = async (mediaId) => {
-    if (!db || !mediaId) return;
+    if (!db || !mediaId) return false;
+
+    const localMedia = mediaItems.find((item) => item.id === mediaId) || null;
+    const mediaSnap = localMedia ? null : await getDoc(doc(db, "media", mediaId));
+    const mediaItem = localMedia || (mediaSnap?.exists() ? { id: mediaSnap.id, ...(mediaSnap.data() || {}) } : null);
+
+    if (!mediaItem) {
+      setDashboardMessage({ type: "error", text: "File not found for deletion." });
+      return false;
+    }
+
+    setDashboardMessage({ type: "info", text: "Deleting file... moving to Recycle Bin." });
     setDeletingMediaId(mediaId);
     try {
+      await addDoc(collection(db, "mediaRecycleBin"), {
+        ...mediaItem,
+        originalMediaId: mediaItem.id,
+        deletedAt: serverTimestamp(),
+        deletedByUid: user?.uid || "",
+        deletedByEmail: user?.email || "",
+        recycleBinSource: "gallery",
+      });
+
       await deleteDoc(doc(db, "media", mediaId));
       setMediaItems((prev) => prev.filter((item) => item.id !== mediaId));
       setSelectedMediaIds((prev) => {
@@ -837,14 +936,51 @@ function App() {
         next.delete(mediaId);
         return next;
       });
+      setDashboardMessage({ type: "success", text: "File deleted and saved to Recycle Bin." });
+      return true;
     } catch (err) {
       setDashboardMessage({ type: "error", text: err?.message || "Delete failed." });
+      return false;
     } finally {
       setDeletingMediaId("");
     }
   };
 
+  const handleDeleteFromPreview = async () => {
+    if (!isAdminUser || !previewItem?.id) return;
+    setPendingDeleteMediaId(previewItem.id);
+    setIsDeleteConfirmOpen(true);
+  };
+
+  const handleCloseDeleteConfirm = () => {
+    if (deletingMediaId && deletingMediaId === pendingDeleteMediaId) return;
+    setIsDeleteConfirmOpen(false);
+    setPendingDeleteMediaId("");
+  };
+
+  const handleConfirmDeleteFromPreview = async () => {
+    if (!isAdminUser || !pendingDeleteMediaId) return;
+
+    const targetId = pendingDeleteMediaId;
+    const targetIndex = previewIndex;
+    const deleted = await handleDeleteMedia(targetId);
+    if (!deleted) {
+      handleCloseDeleteConfirm();
+      return;
+    }
+
+    setPreviewItems((prev) => prev.filter((item) => item.id !== targetId));
+    setPreviewIndex((current) => {
+      if (current < 0) return -1;
+      if (current > targetIndex) return current - 1;
+      return current;
+    });
+
+    handleCloseDeleteConfirm();
+  };
+
   const handleToggleMediaSelection = (mediaId) => {
+    if (!isAdminUser) return;
     setSelectedMediaIds((prev) => {
       const next = new Set(prev);
       if (next.has(mediaId)) {
@@ -857,6 +993,7 @@ function App() {
   };
 
   const handleToggleSelectAllFiltered = () => {
+    if (!isAdminUser) return;
     const filteredIds = filteredMediaItems.map((item) => item.id);
     setSelectedMediaIds((prev) => {
       const allSelected = filteredIds.length > 0 && filteredIds.every((id) => prev.has(id));
@@ -872,16 +1009,36 @@ function App() {
   };
 
   const handleBulkDeleteSelected = async () => {
+    if (!isAdminUser) {
+      setDashboardMessage({ type: "error", text: "Only admins can delete media." });
+      return;
+    }
     if (!db || !selectedMediaIds.size) return;
     setBulkDeleting(true);
-    setDashboardMessage({ type: "info", text: "Deleting selected files..." });
+    setDashboardMessage({ type: "info", text: "Deleting selected files... moving to Recycle Bin." });
 
     const targetIds = Array.from(selectedMediaIds);
+    const deletedIds = [];
     try {
-      await Promise.all(targetIds.map((id) => deleteDoc(doc(db, "media", id))));
-      setMediaItems((prev) => prev.filter((item) => !selectedMediaIds.has(item.id)));
-      setSelectedMediaIds(new Set());
-      setDashboardMessage({ type: "success", text: "Selected files deleted." });
+      for (const id of targetIds) {
+        const deleted = await handleDeleteMedia(id);
+        if (deleted) deletedIds.push(id);
+      }
+
+      setSelectedMediaIds((prev) => {
+        const next = new Set(prev);
+        deletedIds.forEach((id) => next.delete(id));
+        return next;
+      });
+
+      if (deletedIds.length === targetIds.length) {
+        setDashboardMessage({ type: "success", text: "Selected files deleted and saved to Recycle Bin." });
+      } else {
+        setDashboardMessage({
+          type: "info",
+          text: `Deleted ${deletedIds.length}/${targetIds.length} files. Some files could not be deleted.`,
+        });
+      }
     } catch (err) {
       setDashboardMessage({ type: "error", text: err?.message || "Bulk delete failed." });
     } finally {
@@ -892,6 +1049,111 @@ function App() {
   const handleClearDateFilters = () => {
     setDateFrom("");
     setDateTo("");
+  };
+
+  const handleRestoreRecycleItem = async (item) => {
+    if (!isAdminUser || !db || !item?.recycleDocId) return;
+
+    const mediaDocId = String(item.originalMediaId || item.id || "").trim();
+    if (!mediaDocId) {
+      setDashboardMessage({ type: "error", text: "Unable to restore: media id is missing." });
+      return;
+    }
+
+    setRecycleActionId(item.recycleDocId);
+    try {
+      const restoredPayload = { ...item };
+      delete restoredPayload.recycleDocId;
+      delete restoredPayload.originalMediaId;
+      delete restoredPayload.deletedAt;
+      delete restoredPayload.deletedByUid;
+      delete restoredPayload.deletedByEmail;
+      delete restoredPayload.recycleBinSource;
+      delete restoredPayload.id;
+
+      await setDoc(
+        doc(db, "media", mediaDocId),
+        {
+          ...restoredPayload,
+          updatedAt: serverTimestamp(),
+        },
+        { merge: true }
+      );
+
+      await deleteDoc(doc(db, "mediaRecycleBin", item.recycleDocId));
+
+      const restoredItem = { id: mediaDocId, ...restoredPayload };
+      setMediaItems((prev) => {
+        if (prev.some((row) => row.id === mediaDocId)) return prev;
+        return [restoredItem, ...prev];
+      });
+      setRecycleBinItems((prev) => prev.filter((row) => row.recycleDocId !== item.recycleDocId));
+      setDashboardMessage({ type: "success", text: "File restored from Recycle Bin." });
+    } catch (err) {
+      setDashboardMessage({ type: "error", text: err?.message || "Restore failed." });
+    } finally {
+      setRecycleActionId("");
+    }
+  };
+
+  const handleRequestDeleteRecycleItem = (item) => {
+    if (!isAdminUser || !item?.recycleDocId) return;
+    setPendingRecycleDeleteItem(item);
+    setIsRecycleDeleteConfirmOpen(true);
+  };
+
+  const handleCloseRecycleDeleteConfirm = () => {
+    if (recycleActionId && pendingRecycleDeleteItem?.recycleDocId === recycleActionId) return;
+    setIsRecycleDeleteConfirmOpen(false);
+    setPendingRecycleDeleteItem(null);
+  };
+
+  const handleDeleteRecycleItemPermanently = async () => {
+    if (!isAdminUser || !db || !pendingRecycleDeleteItem?.recycleDocId) return;
+
+    const targetItem = pendingRecycleDeleteItem;
+    setRecycleActionId(targetItem.recycleDocId);
+    setDashboardMessage({ type: "info", text: "Deleting permanently from Recycle Bin..." });
+    try {
+      await deleteDoc(doc(db, "mediaRecycleBin", targetItem.recycleDocId));
+      setRecycleBinItems((prev) => prev.filter((row) => row.recycleDocId !== targetItem.recycleDocId));
+      setDashboardMessage({ type: "success", text: "File permanently deleted from Recycle Bin." });
+      setIsRecycleDeleteConfirmOpen(false);
+      setPendingRecycleDeleteItem(null);
+    } catch (err) {
+      setDashboardMessage({ type: "error", text: err?.message || "Permanent delete failed." });
+    } finally {
+      setRecycleActionId("");
+    }
+  };
+
+  const handleRequestEmptyRecycleBin = () => {
+    if (!isAdminUser || !recycleBinItems.length) return;
+    setIsRecycleEmptyConfirmOpen(true);
+  };
+
+  const handleCloseRecycleEmptyConfirm = () => {
+    if (recycleLoading || !!recycleActionId) return;
+    setIsRecycleEmptyConfirmOpen(false);
+  };
+
+  const handleEmptyRecycleBin = async () => {
+    if (!isAdminUser || !db || !recycleBinItems.length) return;
+
+    setRecycleLoading(true);
+    setDashboardMessage({ type: "info", text: "Emptying Recycle Bin..." });
+    try {
+      await Promise.all(
+        recycleBinItems.map((item) => deleteDoc(doc(db, "mediaRecycleBin", item.recycleDocId)))
+      );
+      setRecycleBinItems([]);
+      setDashboardMessage({ type: "success", text: "Recycle Bin emptied successfully." });
+      setIsRecycleEmptyConfirmOpen(false);
+    } catch (err) {
+      setDashboardMessage({ type: "error", text: err?.message || "Failed to empty Recycle Bin." });
+    } finally {
+      setRecycleLoading(false);
+    }
   };
 
   const handleOpenPreview = (mediaId, sourceItems = filteredMediaItems) => {
@@ -1215,7 +1477,7 @@ function App() {
     if (!confirmed) return;
 
     setAdminSaving(true);
-    setAdminPanelMessage({ type: "info", text: "Deleting all media..." });
+    setAdminPanelMessage({ type: "info", text: "Deleting all media... moving to Recycle Bin." });
 
     try {
       const normalizedGroupId = normalizeGroupId(activeGroup);
@@ -1223,13 +1485,22 @@ function App() {
         query(collection(db, "media"), where("groupIdNormalized", "==", normalizedGroupId))
       );
 
-      await Promise.all(
-        mediaSnap.docs.map((item) => deleteDoc(doc(db, "media", item.id)))
-      );
+      for (const row of mediaSnap.docs) {
+        const mediaItem = { id: row.id, ...(row.data() || {}) };
+        await addDoc(collection(db, "mediaRecycleBin"), {
+          ...mediaItem,
+          originalMediaId: mediaItem.id,
+          deletedAt: serverTimestamp(),
+          deletedByUid: user?.uid || "",
+          deletedByEmail: user?.email || "",
+          recycleBinSource: "admin_delete_all",
+        });
+        await deleteDoc(doc(db, "media", mediaItem.id));
+      }
 
       setMediaItems([]);
       setPreviewIndex(-1);
-      setAdminPanelMessage({ type: "success", text: `Deleted ${mediaSnap.docs.length} media item(s).` });
+      setAdminPanelMessage({ type: "success", text: `Deleted ${mediaSnap.docs.length} media item(s) and saved to Recycle Bin.` });
     } catch (err) {
       setAdminPanelMessage({ type: "error", text: err?.message || "Failed to delete media." });
     } finally {
@@ -1643,6 +1914,14 @@ function App() {
               >
                 👤 People ({faceGroups.length})
               </button>
+              {canViewRecycleBin ? (
+                <button
+                  className={`tab-btn ${currentDashboardTab === "recycle" ? "active" : ""}`}
+                  onClick={() => setCurrentDashboardTab("recycle")}
+                >
+                  🗑️ Recycle Bin ({recycleBinItems.length})
+                </button>
+              ) : null}
             </div>
             </section>
 
@@ -1713,22 +1992,24 @@ function App() {
             <p className="caption">Group files: {mediaItems.length}</p>
 
             <div className="gallery-toolbar">
-              <div className="actions-row gallery-actions">
-                <button
-                  className="btn ghost gallery-btn"
-                  onClick={handleToggleSelectAllFiltered}
-                  disabled={!filteredMediaItems.length || dashboardLoading || bulkDeleting}
-                >
-                  Select Multiple
-                </button>
-                <button
-                  className="btn ghost gallery-btn"
-                  onClick={handleBulkDeleteSelected}
-                  disabled={!selectedMediaIds.size || dashboardLoading || bulkDeleting}
-                >
-                  {bulkDeleting ? "Deleting..." : `Delete Selected (${selectedMediaIds.size})`}
-                </button>
-              </div>
+              {isAdminUser ? (
+                <div className="actions-row gallery-actions">
+                  <button
+                    className="btn ghost gallery-btn"
+                    onClick={handleToggleSelectAllFiltered}
+                    disabled={!filteredMediaItems.length || dashboardLoading || bulkDeleting}
+                  >
+                    Select Multiple
+                  </button>
+                  <button
+                    className="btn ghost gallery-btn"
+                    onClick={handleBulkDeleteSelected}
+                    disabled={!selectedMediaIds.size || dashboardLoading || bulkDeleting}
+                  >
+                    {bulkDeleting ? "Deleting..." : `Delete Selected (${selectedMediaIds.size})`}
+                  </button>
+                </div>
+              ) : null}
 
               <div className="date-controls gallery-date-controls">
                 <span className="gallery-date-label">From</span>
@@ -1786,24 +2067,26 @@ function App() {
                       <img src={item.url} alt={item.name || "media"} loading="lazy" />
                     )}
 
-                    <button
-                      className="select-chip"
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        handleToggleMediaSelection(item.id);
-                      }}
-                      disabled={bulkDeleting || deletingMediaId === item.id}
-                      aria-label={selectedMediaIds.has(item.id) ? "Unselect" : "Select"}
-                    >
-                      {selectedMediaIds.has(item.id) ? "✓" : "○"}
-                    </button>
+                    {isAdminUser ? (
+                      <button
+                        className="select-chip"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          handleToggleMediaSelection(item.id);
+                        }}
+                        disabled={bulkDeleting || deletingMediaId === item.id}
+                        aria-label={selectedMediaIds.has(item.id) ? "Unselect" : "Select"}
+                      >
+                        {selectedMediaIds.has(item.id) ? "✓" : "○"}
+                      </button>
+                    ) : null}
                   </div>
                 </article>
               ))}
             </div>
             </section>
             </>
-            ) : (
+            ) : currentDashboardTab === "people" ? (
             /* People Tab */
             <section className="section-block">
               <h2>🔍 Detected Faces</h2>
@@ -1947,7 +2230,74 @@ function App() {
                 </>
               )}
             </section>
-            )}
+            ) : canViewRecycleBin && currentDashboardTab === "recycle" ? (
+            /* Recycle Bin Tab */
+            <section className="section-block recycle-section">
+              <div className="recycle-header">
+                <div>
+                  <h2>🗑️ Recycle Bin</h2>
+                  <p className="caption">Admin-only deleted files for this group.</p>
+                </div>
+                <div className="recycle-header-actions">
+                  <button className="btn ghost" onClick={refreshRecycleBinData} disabled={recycleLoading || !!recycleActionId}>
+                    {recycleLoading ? "Refreshing..." : "Refresh"}
+                  </button>
+                  <button
+                    className="btn danger"
+                    onClick={handleRequestEmptyRecycleBin}
+                    disabled={recycleLoading || !!recycleActionId || !recycleBinItems.length}
+                  >
+                    Empty Bin
+                  </button>
+                </div>
+              </div>
+
+              {recycleLoading ? <div className="status info">Loading recycle bin...</div> : null}
+
+              {!recycleLoading && !recycleBinItems.length ? (
+                <div className="status info">Recycle Bin is empty.</div>
+              ) : null}
+
+              <div className="gallery-grid recycle-grid">
+                {recycleBinItems.map((item) => (
+                  <article className="media-card recycle-card" key={item.recycleDocId}>
+                    <div className="media-preview">
+                      <span className={`card-badge ${item.type === "video" ? "badge-video" : "badge-image"}`}>
+                        {item.type === "video" ? "VIDEO" : "IMG"}
+                      </span>
+                      {item.type === "video" ? (
+                        <video src={item.url} muted preload="metadata" />
+                      ) : (
+                        <img src={item.url} alt={item.name || "recycle media"} loading="lazy" />
+                      )}
+                    </div>
+                    <div className="recycle-meta">
+                      <strong className="recycle-name" title={item.name || "Unnamed file"}>{item.name || "Unnamed file"}</strong>
+                      <span className="recycle-deleted">Deleted: {formatTimestamp(item.deletedAt)}</span>
+                    </div>
+                    <div className="actions-row recycle-actions">
+                      <button
+                        className="btn ghost recycle-btn"
+                        onClick={() => handleRestoreRecycleItem(item)}
+                        disabled={recycleLoading || !!recycleActionId}
+                      >
+                        {recycleActionId === item.recycleDocId ? "Please wait..." : "Restore"}
+                      </button>
+                      <button
+                        className="btn danger recycle-btn"
+                        onClick={() => handleRequestDeleteRecycleItem(item)}
+                        disabled={recycleLoading || !!recycleActionId}
+                      >
+                        {recycleActionId === item.recycleDocId && pendingRecycleDeleteItem?.recycleDocId === item.recycleDocId
+                          ? "Deleting..."
+                          : "Delete Permanently"}
+                      </button>
+                    </div>
+                  </article>
+                ))}
+              </div>
+            </section>
+            ) : null}
 
             {dashboardMessage.text ? (
               <div className={`status ${dashboardMessage.type || "info"}`}>{dashboardMessage.text}</div>
@@ -1974,13 +2324,91 @@ function App() {
               </div>
 
               <div className="preview-action-row">
-                <a className="btn primary preview-download-btn" href={previewItem.url} download target="_blank" rel="noreferrer">
-                  Download
-                </a>
+                <div className="preview-primary-buttons">
+                  <a className="btn primary preview-download-btn" href={previewItem.url} download target="_blank" rel="noreferrer">
+                    Download
+                  </a>
+                  {isAdminUser ? (
+                    <button
+                      className="btn danger"
+                      onClick={handleDeleteFromPreview}
+                      disabled={deletingMediaId === previewItem.id || bulkDeleting}
+                    >
+                      {deletingMediaId === previewItem.id ? "Deleting..." : "Delete"}
+                    </button>
+                  ) : null}
+                </div>
                 <div className="preview-nav-buttons">
                   <button className="btn ghost preview-nav-btn" onClick={handlePreviewPrev}>Prev</button>
                   <button className="btn ghost preview-nav-btn" onClick={handlePreviewNext}>Next</button>
                 </div>
+              </div>
+            </div>
+          </div>
+        ) : null}
+
+        {isDeleteConfirmOpen ? (
+          <div className="preview-overlay" onClick={handleCloseDeleteConfirm}>
+            <div className="preview-modal delete-confirm-modal" onClick={(event) => event.stopPropagation()}>
+              <div className="delete-confirm-header">
+                <h2>Delete this file?</h2>
+              </div>
+              <p className="delete-confirm-text">This file will be removed from Gallery and saved in Recycle Bin.</p>
+              <div className="delete-confirm-actions">
+                <button className="btn ghost" onClick={handleCloseDeleteConfirm} disabled={deletingMediaId === pendingDeleteMediaId}>
+                  Cancel
+                </button>
+                <button className="btn danger" onClick={handleConfirmDeleteFromPreview} disabled={deletingMediaId === pendingDeleteMediaId}>
+                  {deletingMediaId === pendingDeleteMediaId ? "Deleting..." : "Delete"}
+                </button>
+              </div>
+            </div>
+          </div>
+        ) : null}
+
+        {isRecycleDeleteConfirmOpen ? (
+          <div className="preview-overlay" onClick={handleCloseRecycleDeleteConfirm}>
+            <div className="preview-modal delete-confirm-modal" onClick={(event) => event.stopPropagation()}>
+              <div className="delete-confirm-header">
+                <h2>Delete permanently?</h2>
+              </div>
+              <p className="delete-confirm-text">This file will be removed from Recycle Bin forever and cannot be restored.</p>
+              <div className="delete-confirm-actions">
+                <button
+                  className="btn ghost"
+                  onClick={handleCloseRecycleDeleteConfirm}
+                  disabled={recycleActionId === pendingRecycleDeleteItem?.recycleDocId}
+                >
+                  Cancel
+                </button>
+                <button
+                  className="btn danger"
+                  onClick={handleDeleteRecycleItemPermanently}
+                  disabled={recycleActionId === pendingRecycleDeleteItem?.recycleDocId}
+                >
+                  {recycleActionId === pendingRecycleDeleteItem?.recycleDocId ? "Deleting..." : "Delete Permanently"}
+                </button>
+              </div>
+            </div>
+          </div>
+        ) : null}
+
+        {isRecycleEmptyConfirmOpen ? (
+          <div className="preview-overlay" onClick={handleCloseRecycleEmptyConfirm}>
+            <div className="preview-modal delete-confirm-modal" onClick={(event) => event.stopPropagation()}>
+              <div className="delete-confirm-header">
+                <h2>Empty Recycle Bin?</h2>
+              </div>
+              <p className="delete-confirm-text">
+                This will permanently delete all {recycleBinItems.length} files in the recycle bin for this group.
+              </p>
+              <div className="delete-confirm-actions">
+                <button className="btn ghost" onClick={handleCloseRecycleEmptyConfirm} disabled={recycleLoading}>
+                  Cancel
+                </button>
+                <button className="btn danger" onClick={handleEmptyRecycleBin} disabled={recycleLoading}>
+                  {recycleLoading ? "Deleting..." : "Empty Bin"}
+                </button>
               </div>
             </div>
           </div>

@@ -772,6 +772,13 @@ h2 {
   z-index: 2;
 }
 
+.preview-primary-buttons {
+  display: inline-flex;
+  gap: 10px;
+  align-items: center;
+  justify-self: start;
+}
+
 .preview-nav-buttons {
   display: inline-flex;
   gap: 8px;
@@ -800,9 +807,118 @@ h2 {
   min-width: 72px;
 }
 
+.delete-confirm-modal {
+  width: min(440px, 100%);
+  padding: 16px;
+  border-radius: 16px;
+  background: rgba(17, 20, 48, 0.98);
+  box-shadow: 0 16px 38px rgba(2, 6, 23, 0.55);
+}
+
+.delete-confirm-modal h2 {
+  margin: 0;
+  font-size: 1.4rem;
+  line-height: 1.2;
+  color: #eef0ff;
+}
+
+.delete-confirm-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.delete-confirm-text {
+  margin: 8px 0 0;
+  color: #aab1d7;
+  font-size: 0.96rem;
+  line-height: 1.4;
+}
+
+.delete-confirm-actions {
+  margin-top: 14px;
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+.delete-confirm-actions .btn {
+  min-height: 38px;
+  min-width: 116px;
+  border-radius: 10px;
+  font-weight: 700;
+}
+
+.recycle-section {
+  border-color: rgba(129, 140, 248, 0.22);
+}
+
+.recycle-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+
+.recycle-header-actions {
+  display: inline-flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.recycle-grid {
+  grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+}
+
+.recycle-card {
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.recycle-card .media-preview {
+  border-radius: 12px;
+}
+
+.recycle-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.recycle-name {
+  color: #eef0ff;
+  font-size: 0.94rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.recycle-deleted {
+  color: #9aa0c4;
+  font-size: 0.8rem;
+}
+
+.recycle-actions {
+  margin-top: auto;
+  gap: 8px;
+}
+
+.recycle-btn {
+  min-height: 34px;
+  padding: 0 12px;
+}
+
 @media (max-width: 640px) {
   .preview-action-row {
     grid-template-columns: 1fr;
+  }
+
+  .preview-primary-buttons {
+    width: 100%;
   }
 
   .preview-download-btn {
